@@ -81,7 +81,7 @@ InitConsole(void)
 }
 
 /// receive n bytes from I2c
-void I2CReceiveN(uint8_t slave_addr, uint8_t reg, uint8_t numElem, uint8_t buff[]){
+void I2CReceiveN(uint8_t slave_addr, uint8_t reg, uint8_t numElem, uint8_t buff[], int delay){
 
     uint32_t i;
 
@@ -97,10 +97,11 @@ void I2CReceiveN(uint8_t slave_addr, uint8_t reg, uint8_t numElem, uint8_t buff[
     HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_SINGLE_SEND;
     //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_START);
 
-    //Small delay
-    SysCtlDelay(416666);
     //wait for MCU to finish transaction
     while(I2CMasterBusy(I2C0_BASE));
+
+    // delay
+    SysCtlDelay(delay);
 
     //specify that we are going to read from slave device
     HWREG(I2C0_BASE + I2C_O_MSA) = (slave_addr << 1) | true;
@@ -111,7 +112,7 @@ void I2CReceiveN(uint8_t slave_addr, uint8_t reg, uint8_t numElem, uint8_t buff[
     HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_RECEIVE_START;
     //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_RECEIVE);
 
-    SysCtlDelay(416666);
+    SysCtlDelay(SMALLDELAY);
     //wait for MCU to finish transaction
     while(I2CMasterBusy(I2C0_BASE));
 
@@ -119,129 +120,152 @@ void I2CReceiveN(uint8_t slave_addr, uint8_t reg, uint8_t numElem, uint8_t buff[
     //buff[0] = (HWREG(I2C0_BASE + I2C_O_MDR));
     buff[0] = I2CMasterDataGet(I2C0_BASE);
 
-    for (i = 1; i < numElem - 1; i++){
-        /// ReceivE operation (master remains in Master Receive state).
-        HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_RECEIVE_CONT;
-        //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_RECEIVE);I2C_MASTER_CMD_BURST_RECEIVE_CONT
-        //wait for MCU to finish transaction
-        while(I2CMasterBusy(I2C0_BASE));
+    if(numElem > 1){
+        for (i = 1; i < numElem - 1; i++){
+                /// ReceivE operation (master remains in Master Receive state).
+                HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_RECEIVE_CONT;
+                //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_RECEIVE);I2C_MASTER_CMD_BURST_RECEIVE_CONT
+                //wait for MCU to finish transaction
 
-        buff[i] = I2CMasterDataGet(I2C0_BASE);
-    //    UARTprintf("Received: '%c'\n", buff[i]);
+                SysCtlDelay(SMALLDELAY);
+                while(I2CMasterBusy(I2C0_BASE));
+
+                buff[i] = I2CMasterDataGet(I2C0_BASE);
+            //    UARTprintf("Received: '%c'\n", buff[i]);
+            }
+
+            /// ultimo elemento
+            ///RECEIVE followed by STOP condition (master goes to Idle state).
+            HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_RECEIVE_FINISH;
+            //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_RECEIVE_FINISH);
+            //wait for MCU to finish transaction
+            SysCtlDelay(SMALLDELAY);
+            while(I2CMasterBusy(I2C0_BASE));
+            buff[numElem - 1] = I2CMasterDataGet(I2C0_BASE);
+
+           // UARTprintf("Received: '%c'\n",  buff[numElem - 1]);
     }
-
-    /// ultimo elemento
-    ///RECEIVE followed by STOP condition (master goes to Idle state).
-    HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_RECEIVE_FINISH;
-    //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_RECEIVE_FINISH);
-    //wait for MCU to finish transaction
-    SysCtlDelay(416666);
-    while(I2CMasterBusy(I2C0_BASE));
-    buff[numElem - 1] = I2CMasterDataGet(I2C0_BASE);
-
-   // UARTprintf("Received: '%c'\n",  buff[numElem - 1]);
 
 }
 
 
-void readCalibrationValues(uint16_t PROM[], int n, uint8_t slave_address, uint8_t read_PROM_cmd){
-
-    uint8_t fillbuff[2];
+void I2CSendN(uint8_t slave_addr, uint8_t reg[], uint8_t numToSend){
     uint8_t i;
-    uint16_t temp;
-    uint8_t buffindex;
 
-    for(buffindex = 0; buffindex < 2; buffindex++)
-        {
-            fillbuff[buffindex] = 0;
+    /// Sets Slave adress on master buffer, along with the WRITE bit
+    HWREG(I2C0_BASE + I2C_O_MSA) = (slave_addr << 1) | false;
+    //I2CMasterSlaveAddrSet(I2C0_BASE, slave_addr, false);
+
+    /// Inserts Data into Master buffer
+    HWREG(I2C0_BASE + I2C_O_MDR) = reg[0];
+
+    /// sends START (BIT1) and RUN (BIT0)
+    /// from idle to transmit mode
+    HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_SEND_START;
+    //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_START);
+
+    //Small delay
+    SysCtlDelay(SMALLDELAY);
+    //wait for MCU to finish transaction
+    while(I2CMasterBusy(I2C0_BASE));
+
+    for (i = 1; i < numToSend - 1; i++){
+        /// Inserts Data into Master buffer
+           HWREG(I2C0_BASE + I2C_O_MDR) = reg[i];
+
+           HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_SEND_CONT;
+           //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_START);
+
+           //Small delay
+           SysCtlDelay(SMALLDELAY);
+           //wait for MCU to finish transaction
+           while(I2CMasterBusy(I2C0_BASE));
+    }
+    /// Inserts Data into Master buffer
+    HWREG(I2C0_BASE + I2C_O_MDR) = reg[i];
+
+    HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_SEND_FINISH;
+    //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_START);
+
+    //Small delay
+    SysCtlDelay(SMALLDELAY);
+    //wait for MCU to finish transaction
+    while(I2CMasterBusy(I2C0_BASE));
+}
+
+/// receive n bytes from I2c
+void I2CSendNReceiveN(uint8_t slave_addr, uint8_t reg[], uint8_t numToSend, uint8_t numElem, uint8_t buff[], int delay){
+
+    uint32_t i;
+
+    //Send command with N arguments to retrieve arguments
+    I2CSendN(slave_addr, reg, numToSend);
+
+    // Finished sending
+
+    SysCtlDelay(delay);
+
+    //specify that we are going to read from slave device
+    HWREG(I2C0_BASE + I2C_O_MSA) = (slave_addr << 1) | true;
+    //I2CMasterSlaveAddrSet(I2C0_BASE, slave_addr, true);
+
+    /// Repeated START condition followed by RECEIVE    (master remains in Master Receive state). pag. 1024
+    /// repeated start
+    HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_RECEIVE_START;
+    //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_RECEIVE);
+
+    SysCtlDelay(SMALLDELAY);
+    //wait for MCU to finish transaction
+    while(I2CMasterBusy(I2C0_BASE));
+
+    /// Get first byte from read command
+    //buff[0] = (HWREG(I2C0_BASE + I2C_O_MDR));
+    buff[0] = I2CMasterDataGet(I2C0_BASE);
+
+    if(numElem > 1){
+        for (i = 1; i < numElem - 1; i++){
+            /// ReceivE operation (master remains in Master Receive state).
+            HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_RECEIVE_CONT;
+            //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_RECEIVE);I2C_MASTER_CMD_BURST_RECEIVE_CONT
+            //wait for MCU to finish transaction
+            SysCtlDelay(SMALLDELAY);
+            while(I2CMasterBusy(I2C0_BASE));
+
+            buff[i] = I2CMasterDataGet(I2C0_BASE);
+        //    UARTprintf("Received: '%c'\n", buff[i]);
         }
 
-// Read calibration values
-    for ( i = 0 ; i < n ; i++ ) {
+        /// ultimo elemento
+        ///RECEIVE followed by STOP condition (master goes to Idle state).
+        HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_BURST_RECEIVE_FINISH;
+        //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_RECEIVE_FINISH);
+        //wait for MCU to finish transaction
+        SysCtlDelay(SMALLDELAY);
+        while(I2CMasterBusy(I2C0_BASE));
+        buff[numElem - 1] = I2CMasterDataGet(I2C0_BASE);
 
-        I2CReceiveN(slave_address, read_PROM_cmd+i*2, 2, fillbuff);
-
-        temp = fillbuff[0] << 8 | fillbuff[1];
-
-        PROM[i] = fillbuff[0] << 8 | fillbuff[1];
-
-        for(buffindex = 0; buffindex < 2; buffindex++){
-                   fillbuff[buffindex] = 0;
-          }
+       // UARTprintf("Received: '%c'\n",  buff[numElem - 1]);
     }
 }
 
 
 //sends an I2C command to the specified slave
-void I2CSend(uint8_t slave_addr, uint8_t num_of_args, uint8_t args)
+void I2CSend(uint8_t slave_addr, uint8_t args)
 {
-    // Tell the master module what address it will place on the bus when
-    // communicating with the slave.
-    I2CMasterSlaveAddrSet(I2C0_BASE, slave_addr, false);
+   /// Sets Slave adress on master buffer, along with the WRITE bit
+   HWREG(I2C0_BASE + I2C_O_MSA) = (slave_addr << 1) | false;
+   //I2CMasterSlaveAddrSet(I2C0_BASE, slave_addr, false);
 
-    //stores list of variable number of arguments
-    va_list vargs;
+   /// Inserts Data into Master buffer
+   HWREG(I2C0_BASE + I2C_O_MDR) = args;
 
-    //specifies the va_list to "open" and the last fixed argument
-    //so vargs knows where to start looking
-    va_start(vargs, num_of_args);
+   /// sends START (BIT1) and RUN (BIT0)
+   /// from idle to transmit mode
+   HWREG(I2C0_BASE + I2C_O_MCS) = I2C_MASTER_CMD_SINGLE_SEND;
+   //I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_START);
 
-    //put data to be sent into MDR
-  //  I2CMasterDataPut(I2C0_BASE, args);
-
-    HWREG(I2C0_BASE + I2C_O_MDR) = args;
-
-   // uint32_t mdr = I2CMasterDataGet(I2C0_BASE);
-
-    //if there is only one argument, we only need to use the
-    //single send I2C function
-    if(num_of_args == 1)
-    {
-        //Initiate send of data from the MCU
-        I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_SINGLE_SEND);
-
-        // Wait until MCU is done transferring.
-        while(I2CMasterBusy(I2C0_BASE));
-
-        //"close" variable argument list
-        va_end(vargs);
-    }
-
-    //otherwise, we start transmission of multiple bytes on the
-    //I2C bus
-    else
-    {
-        //Initiate send of data from the MCU
-        I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_START);
-
-        // Wait until MCU is done transferring.
-        while(I2CMasterBusy(I2C0_BASE));
-
-        uint8_t i = 1;
-
-        //send num_of_args-2 pieces of data, using the
-        //BURST_SEND_CONT command of the I2C module
-        for(i = 1; i < (num_of_args - 1); i++)
-        {
-            //put next piece of data into I2C FIFO
-            I2CMasterDataPut(I2C0_BASE, va_arg(vargs, uint32_t));
-            //send next data that was just placed into FIFO
-            I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_CONT);
-
-            // Wait until MCU is done transferring.
-            while(I2CMasterBusy(I2C0_BASE));
-        }
-
-        //put last piece of data into I2C FIFO
-        I2CMasterDataPut(I2C0_BASE, va_arg(vargs, uint32_t));
-        //send next data that was just placed into FIFO
-        I2CMasterControl(I2C0_BASE, I2C_MASTER_CMD_BURST_SEND_FINISH);
-        // Wait until MCU is done transferring.
-        while(I2CMasterBusy(I2C0_BASE));
-
-        //"close" variable args list
-        va_end(vargs);
-    }
+   //wait for MCU to finish transaction
+   while(I2CMasterBusy(I2C0_BASE));
 }
 
 void initI2C0(void)
@@ -296,6 +320,33 @@ void initI2C0(void)
    HWREG(I2C0_BASE + I2C_O_FIFOCTL) = 80008000;
 }
 
+void readCalibrationValues(uint16_t PROM[], int n, uint8_t slave_address, uint8_t read_PROM_cmd){
+
+    uint8_t fillbuff[2];
+    uint8_t i;
+    uint16_t temp;
+    uint8_t buffindex;
+
+    for(buffindex = 0; buffindex < 2; buffindex++)
+        {
+            fillbuff[buffindex] = 0;
+        }
+
+// Read calibration values
+    for ( i = 0 ; i < n ; i++ ) {
+
+        I2CReceiveN(slave_address, read_PROM_cmd+i*2, 2, fillbuff, SMALLDELAY);
+
+        temp = fillbuff[0] << 8 | fillbuff[1];
+
+        PROM[i] = fillbuff[0] << 8 | fillbuff[1];
+
+        for(buffindex = 0; buffindex < 2; buffindex++){
+                   fillbuff[buffindex] = 0;
+          }
+    }
+}
+
 uint32_t readADCValueTSYS01(){
     uint8_t fillbuff[3];
 
@@ -308,7 +359,7 @@ uint32_t readADCValueTSYS01(){
        }
 
 
-   I2CReceiveN(TSYS01_ADDR, TSYS01_ADC_READ,3, fillbuff);
+   I2CReceiveN(TSYS01_ADDR, TSYS01_ADC_READ,3, fillbuff, SMALLDELAY);
 
    temp = fillbuff[0] << 8 | fillbuff[1];
 
@@ -370,7 +421,7 @@ uint16_t Fletcher16( uint16_t PROM[])
 
 void TSYS01ReadTemperatureProcess(){
 
-     I2CSend(TSYS01_ADDR, 1, TSYS01_RESET);
+     I2CSend(TSYS01_ADDR, TSYS01_RESET);
 
      SysCtlDelay(416666);
 
@@ -387,7 +438,7 @@ void TSYS01ReadTemperatureProcess(){
       * it will return 0
       */
 
-     I2CSend(TSYS01_ADDR, 1, TSYS01_ADC_TEMP_CONV);
+     I2CSend(TSYS01_ADDR, TSYS01_ADC_TEMP_CONV);
 
      // delay for the conversion sequence
      SysCtlDelay(416666);
@@ -454,7 +505,6 @@ bool sensorinitMS5837(uint16_t C[]) {
     return false; // CRC fail
 }
 
-
 uint32_t readADCValueMS5837(uint8_t slave_addr, uint8_t reg, uint8_t numElem){
    uint8_t fillbuff[3];
 
@@ -467,7 +517,7 @@ uint32_t readADCValueMS5837(uint8_t slave_addr, uint8_t reg, uint8_t numElem){
        }
 
 
-   I2CReceiveN(slave_addr, reg,numElem, fillbuff);
+   I2CReceiveN(slave_addr, reg,numElem, fillbuff,SMALLDELAY);
 
    temp = fillbuff[0] << 8 | fillbuff[1];
 
@@ -478,7 +528,7 @@ uint32_t readADCValueMS5837(uint8_t slave_addr, uint8_t reg, uint8_t numElem){
 
 uint32_t readSensorDigitalPressureMS5837() {
     // Request D1 conversion
-    I2CSend(MS5837_ADDR, 1, MS5837_CONVERT_D1_1024);
+    I2CSend(MS5837_ADDR, MS5837_CONVERT_D1_1024);
 
     SysCtlDelay(4166666*2); // Max conversion time per datasheet
 
@@ -491,7 +541,7 @@ uint32_t readSensorDigitalPressureMS5837() {
 
 uint32_t readSensorDigitalTemperatureMS5837() {
     // Request D2 conversion
-    I2CSend(MS5837_ADDR, 1, MS5837_CONVERT_D2_1024);
+    I2CSend(MS5837_ADDR, MS5837_CONVERT_D2_1024);
 
     SysCtlDelay(4166666*2); // Max conversion time per datasheet
 
@@ -575,9 +625,6 @@ void MS5837readPressureProcess(uint16_t C[], float fluidDensity){
     // uint16_t C[7];
     // float fluidDensity = 1029; //1029 for sea water and 997 for freshwater (kg/m^3)
 
-
-      uint8_t i;
-
       uint32_t D1;
       D1 = readSensorDigitalPressureMS5837();
 
@@ -602,6 +649,86 @@ void MS5837readPressureProcess(uint16_t C[], float fluidDensity){
 
 }
 
+void readMS5837PressureSensor(){
+    uint16_t C[7];
+
+   // reset the device as per the data sheet
+   I2CSend(MS5837_ADDR, MS5837_RESET);
+
+   readCalibrationValues(C, 7, MS5837_ADDR, MS5837_PROM_READ);
+   float fluidDensity = 1029; //1029 for sea water and 997 for freshwater (kg/m^3)
+   if(sensorinitMS5837(C) == true){
+       MS5837readPressureProcess(C,fluidDensity);
+   } else{
+       UARTprintf("Sensor was not properly initialized. Try again");
+   }
+}
+
+void PHEZOStatus(){
+    uint8_t buffer[18];
+
+    // The command status
+    uint8_t status[6] = {0x73, 0x74, 0x61, 0x74, 0x75, 0x73};
+    uint8_t statusCode;
+
+    I2CSendNReceiveN(PHEZO_ADDR, status,6, 18, buffer, BIGDELAY);
+
+    statusCode = buffer[0];
+}
+
+uint8_t PHEZOSendCalibrationCmd(uint8_t cal, uint8_t calMode){
+    uint8_t statusCode;
+    uint8_t buffer[1];
+
+    if(calMode == 0){
+        // Command: " cal,low,n "
+        uint8_t LowCalibration[9] = {0x63, 0x61, 0x6C, 0x2C, 0x6C, 0x6F, 0x77, 0x2C, cal};
+        I2CSendNReceiveN(PHEZO_ADDR, LowCalibration, 9, 1, buffer, BIGDELAY);
+    }
+    else if(calMode == 1){
+        // Command: " cal,mid,n "
+        uint8_t MidCalibration[9] = {0x63, 0x61, 0x6C, 0x2C, 0x6D, 0x69, 0x64, 0x2C, cal};
+        I2CSendNReceiveN(PHEZO_ADDR, MidCalibration, 9, 1, buffer, BIGDELAY);
+    }
+    else if(calMode == 2){
+        // Command: " cal,high,n "
+        uint8_t calibration[10] = {0x63, 0x61, 0x6C, 0x2C, 0x68, 0x69, 0x67, 0x68, 0x2C, cal};
+        I2CSendNReceiveN(PHEZO_ADDR, calibration, 10, 1, buffer, BIGDELAY);
+    }
+    else{
+        // Command: " cal,clear "
+        uint8_t calibration[9] = {0x63, 0x61, 0x6C, 0x2C, 0x63, 0x6C, 0x65, 0x61, 0x72};
+        I2CSendNReceiveN(PHEZO_ADDR, calibration, 9, 1, buffer, BIGDELAY);
+    }
+
+    statusCode = buffer[0];
+    return statusCode;
+}
+
+void PHEZOReadPH(){
+    uint8_t readNum;
+    readNum = 10;
+    uint8_t buffer[10];
+    uint8_t i;
+    uint8_t j;
+    uint8_t statusCode;
+
+    for (i =0; i< readNum; i++){
+        I2CReceiveN(PHEZO_ADDR, PHEZO_READ, readNum, buffer, BIGDELAY);
+
+        statusCode = buffer[0];
+
+        if(statusCode == 1){
+            UARTprintf("read: '%s'\n",  buffer);
+        }
+        for(j = 0; j< readNum; j++){
+            buffer[j] = 0;
+        }
+        SysCtlDelay(1000000);
+    }
+}
+
+
 void main(){
     InitConsole();
 
@@ -611,20 +738,21 @@ void main(){
  //   // reset the device as per the data sheet
  //   I2CSend(TSYS01_ADDR, 1, TSYS01_RESET);
    // readCalibrationValues(PROM, 8, TSYS01_ADDR, TSYS01_PROM_READ);
-    TSYS01ReadTemperatureProcess();
 
-    uint16_t C[7];
 
-    // reset the device as per the data sheet
-    I2CSend(MS5837_ADDR, 1, MS5837_RESET);
+    //TSYS01ReadTemperatureProcess();
 
-    readCalibrationValues(C, 7, MS5837_ADDR, MS5837_PROM_READ);
-    float fluidDensity = 1029; //1029 for sea water and 997 for freshwater (kg/m^3)
-    if(sensorinitMS5837(C) == true){
-        MS5837readPressureProcess(C,fluidDensity);
-    } else{
-        UARTprintf("Sensor was not properly initialized. Try again");
-    }
+/*
+ * Begin process for Pressure sensor
+ */
+  //  readMS5837PressureSensor();
+
+
+    /*
+     * Read PH sensor
+     */
+    PHEZOSendCalibrationCmd(4,0);
+
 
     return(0);
 }
