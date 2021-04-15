@@ -320,6 +320,58 @@ void initI2C0(void)
    HWREG(I2C0_BASE + I2C_O_FIFOCTL) = 80008000;
 }
 
+void extern_initI2C0(uint32_t ui32SysClock)
+{
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_I2C0);
+
+   //reset I2C module
+   SysCtlPeripheralReset(SYSCTL_PERIPH_I2C0);
+
+   //enable GPIO peripheral that contains I2C
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);
+
+   while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOB));
+
+   // Configure the pin muxing for I2C0 functions on port B2 and B3.
+   GPIOPinConfigure(GPIO_PB2_I2C0SCL);
+   GPIOPinConfigure(GPIO_PB3_I2C0SDA);
+
+   // Select the I2C function for these pins.
+   GPIOPinTypeI2CSCL(GPIO_PORTB_BASE, GPIO_PIN_2);
+   GPIOPinTypeI2C(GPIO_PORTB_BASE, GPIO_PIN_3);
+
+   /***
+    *   Setting up module clock
+    * **/
+
+//   uint32_t ui32SysClock;
+//   ui32SysClock = SysCtlClockFreqSet((SYSCTL_OSC_MAIN | SYSCTL_USE_PLL | SYSCTL_XTAL_25MHZ |
+//           SYSCTL_CFG_VCO_480), 100000000);
+
+   //
+   // Stop the Clock, Reset and Enable I2C Module
+   // in Master Function
+   //
+   SysCtlPeripheralDisable(SYSCTL_PERIPH_I2C0);
+   SysCtlPeripheralReset(SYSCTL_PERIPH_I2C0);
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_I2C0);
+
+   //
+   // Wait for the Peripheral to be ready for programming
+   //
+   while(!SysCtlPeripheralReady(SYSCTL_PERIPH_I2C0));
+
+
+   // Enable and initialize the I2C0 master module.  Use the system clock for
+   // the I2C0 module.  The last parameter sets the I2C data transfer rate.
+   // If false the data rate is set to 100kbps and if true the data rate will
+   // be set to 400kbps.
+   I2CMasterInitExpClk(I2C0_BASE, ui32SysClock, false);
+
+   //clear I2C FIFOs
+   HWREG(I2C0_BASE + I2C_O_FIFOCTL) = 80008000;
+}
+
 void readCalibrationValues(uint16_t PROM[], int n, uint8_t slave_address, uint8_t read_PROM_cmd){
 
     uint8_t fillbuff[2];
@@ -335,7 +387,8 @@ void readCalibrationValues(uint16_t PROM[], int n, uint8_t slave_address, uint8_
 // Read calibration values
     for ( i = 0 ; i < n ; i++ ) {
 
-        I2CReceiveN(slave_address, read_PROM_cmd+i*2, 2, fillbuff, SMALLDELAY);
+        I2CReceiveN(slave_address, read_PROM_cmd+i*2, 2, fillbuff, 418666);
+        SysCtlDelay(100000);
 
         temp = fillbuff[0] << 8 | fillbuff[1];
 
@@ -371,11 +424,10 @@ uint32_t readADCValueTSYS01(){
 /**
  * Calculate TSYS01 temperature according to datasheet
  */
-float calculateTemperatureTSYS01(int sensorRead, uint16_t PROM[]){
-    //int adc;
+uint16_t calculateTemperatureTSYS01(uint32_t sensorRead, uint16_t PROM[]){
     uint16_t adc = sensorRead/256;
 
-    float calculation;
+    uint16_t calculation;
     calculation = (-2) * PROM[1] / 1000000000000000000000.0 * pow(adc,4)+
             4 * PROM[2] / 10000000000000000.0 * pow(adc,3) +
           (-2) * PROM[3] / 100000000000.0 * pow(adc,2) +
@@ -421,7 +473,6 @@ uint16_t Fletcher16( uint16_t PROM[])
 
 void TSYS01ReadTemperatureProcess(){
 
-     I2CSend(TSYS01_ADDR, TSYS01_RESET);
 
      SysCtlDelay(416666);
 
@@ -432,6 +483,40 @@ void TSYS01ReadTemperatureProcess(){
 
      uint16_t checksumResult;
      checksumResult = Fletcher16(PROM);
+
+
+     /** Send the command to initiate the conversion sequence.
+      * Has to be done before reading the sensor ADC value, else
+      * it will return 0
+      */
+
+     I2CSend(TSYS01_ADDR, TSYS01_ADC_TEMP_CONV);
+
+     // delay for the conversion sequence
+     SysCtlDelay(416666);
+
+     uint32_t sensorRead;
+
+     // ADC value from sensor
+     sensorRead = readADCValueTSYS01();
+
+     //SO FAR THIS IS WORKING, BUT NEED TO SEE IF VALUES ARE CORRECT
+
+     uint16_t temperature;
+     temperature = calculateTemperatureTSYS01(sensorRead, PROM);
+     UARTprintf("Temperature: '%d' \n", temperature);
+
+}
+
+float TSYS01ReadTemperature(){
+
+     SysCtlDelay(416666);
+
+     // array to hold the PROM values for calibration
+     uint16_t PROM[8];
+
+     readCalibrationValues(PROM, 8, TSYS01_ADDR, TSYS01_PROM_READ);
+
 
      /** Send the command to initiate the conversion sequence.
       * Has to be done before reading the sensor ADC value, else
@@ -451,9 +536,11 @@ void TSYS01ReadTemperatureProcess(){
      //SO FAR THIS IS WORKING, BUT NEED TO SEE IF VALUES ARE CORRECT
 
      float temperature;
-     temperature = calculateTemperatureTSYS01((int)sensorRead, PROM);
-}
+     temperature = calculateTemperatureTSYS01(sensorRead, PROM);
+    // UARTprintf("Temperature: '%d' \n", temperature);
 
+     return temperature;
+}
 
 uint8_t crc4(uint16_t n_prom[]) {
     uint16_t n_rem = 0;
@@ -639,7 +726,7 @@ void MS5837readPressureProcess(uint16_t C[], float fluidDensity){
       UARTprintf("Pressure: '%d'\n",  (int32_t)press);
 
       float temp = temperature(result[0]);
-      UARTprintf("temperature: '%d'\n",  (int32_t)temp);
+      UARTprintf("Press sensor temperature: '%d'\n",  (int32_t)temp);
 
       float depth = depthCalc(fluidDensity, result[1]);
       UARTprintf("depth: 0.'%d'\n",  depth*100);
@@ -649,14 +736,94 @@ void MS5837readPressureProcess(uint16_t C[], float fluidDensity){
 
 }
 
+//void MS5837readPressure(float result[]){
+//        uint16_t C[7];
+//
+//      readCalibrationValues(C, 7, MS5837_ADDR, MS5837_PROM_READ);
+//      float fluidDensity = 1029; //1029 for sea water and 997 for freshwater (kg/m^3)
+//      SysCtlDelay(10000000);
+//      if(sensorinitMS5837(C) == true){
+//
+//          uint32_t D1;
+//          D1 = readSensorDigitalPressureMS5837();
+//
+//          uint32_t D2;
+//          D2 =readSensorDigitalTemperatureMS5837();
+//
+//          int32_t result[2];
+//          calculateMS5837(D1, D2, C, result); // result of this will be an array with 0: TEMP, 1: Pressure
+//
+//          float press = pressureCalc(1, result[1]);
+//         // UARTprintf("Pressure: '%d'\n",  (int32_t)press);
+//
+//          float temp = temperature(result[0]);
+//        //  UARTprintf("Press sensor temperature: '%d'\n",  (int32_t)temp);
+//
+//          float depth = depthCalc(fluidDensity, result[1]);
+//        //  UARTprintf("depth: 0.'%d'\n",  depth*100);
+//
+//          float altitude = altitudeCalc(result[1]);
+//      //    UARTprintf("altitude: '%d'\n",  (int32_t)altitude);
+//
+//          result[0] = press;
+//          result[1] = temp;
+//          result[2] = depth;
+//          result[3] = altitude;
+//      }
+//
+//}
+
+void MS5837readPressure(float arrayResult[]){
+        uint16_t C[7];
+       // float press;
+      // float arrayResult[4];
+        float press;
+        float temp;
+        float depth;
+        float altitude;
+
+      readCalibrationValues(C, 7, MS5837_ADDR, MS5837_PROM_READ);
+      float fluidDensity = 1029; //1029 for sea water and 997 for freshwater (kg/m^3)
+      SysCtlDelay(10000000);
+      if(sensorinitMS5837(C) == true){
+
+          uint32_t D1;
+          D1 = readSensorDigitalPressureMS5837();
+
+          uint32_t D2;
+          D2 =readSensorDigitalTemperatureMS5837();
+
+          int32_t result[2];
+          calculateMS5837(D1, D2, C, result); // result of this will be an array with 0: TEMP, 1: Pressure
+
+          press = pressureCalc(1, result[1]);
+       // UARTprintf("Pressure: '%d'\n",  (int32_t)press);
+
+          temp = temperature(result[0]);
+      //  UARTprintf("Press sensor temperature: '%d'\n",  (int32_t)temp);
+
+          depth = depthCalc(fluidDensity, result[1]);
+      //  UARTprintf("depth: 0.'%d'\n",  depth*100);
+
+          altitude = altitudeCalc(result[1]);
+    //    UARTprintf("altitude: '%d'\n",  (int32_t)altitude);
+
+      }
+        arrayResult[0] = press;
+        arrayResult[1] = temp;
+        arrayResult[2] = depth;
+        arrayResult[3] = altitude;
+
+}
+
+
+
 void readMS5837PressureSensor(){
     uint16_t C[7];
 
-   // reset the device as per the data sheet
-   I2CSend(MS5837_ADDR, MS5837_RESET);
-
    readCalibrationValues(C, 7, MS5837_ADDR, MS5837_PROM_READ);
    float fluidDensity = 1029; //1029 for sea water and 997 for freshwater (kg/m^3)
+   SysCtlDelay(10000000);
    if(sensorinitMS5837(C) == true){
        MS5837readPressureProcess(C,fluidDensity);
    } else{
@@ -705,54 +872,146 @@ uint8_t PHEZOSendCalibrationCmd(uint8_t cal, uint8_t calMode){
     return statusCode;
 }
 
-void PHEZOReadPH(){
+void PHEZOReadPH(uint8_t buffer[]){
     uint8_t readNum;
     readNum = 10;
-    uint8_t buffer[10];
-    uint8_t i;
+  //  uint8_t buffer[10];
+ //   uint8_t i;
     uint8_t j;
     uint8_t statusCode;
 
-    for (i =0; i< readNum; i++){
-        I2CReceiveN(PHEZO_ADDR, PHEZO_READ, readNum, buffer, BIGDELAY);
+        I2CReceiveN(PHEZO_ADDR, PHEZO_READ, readNum, buffer, 250000000);
 
         statusCode = buffer[0];
 
         if(statusCode == 1){
-            UARTprintf("read: '%s'\n",  buffer);
+            UARTprintf("PH: '%s'\n",  buffer);
         }
-        for(j = 0; j< readNum; j++){
-            buffer[j] = 0;
+        else if(statusCode == 254){
+            UARTprintf("still processing, not ready '%s'\n",  buffer);
         }
+        else if(statusCode == 255){
+            UARTprintf("no data to send '%s'\n",  buffer);
+        }
+        else if(statusCode == 2){
+            UARTprintf("syntax error '%s'\n",  buffer);
+        }
+        else{
+            UARTprintf("error '%s'\n",  buffer);
+        }
+
+//        for(j = 0; j< readNum; j++){
+//            buffer[j] = 0;
+//        }
         SysCtlDelay(1000000);
-    }
+
 }
 
-
-void main(){
-    InitConsole();
-
-    initI2C0();
-
-  //  uint16_t PROM[8];
- //   // reset the device as per the data sheet
- //   I2CSend(TSYS01_ADDR, 1, TSYS01_RESET);
-   // readCalibrationValues(PROM, 8, TSYS01_ADDR, TSYS01_PROM_READ);
-
-
-    //TSYS01ReadTemperatureProcess();
-
-/*
- * Begin process for Pressure sensor
- */
-  //  readMS5837PressureSensor();
-
-
-    /*
-     * Read PH sensor
+void DOEZOActivate(uint8_t actdeact){
+    /**
+     *  actdeact: tells the activation value to be sent to the sensor. to activate: 0x01, to deactivate: 0x00
      */
-    PHEZOSendCalibrationCmd(4,0);
 
+    //uint8_t act = 0x00;
+    uint8_t sendBuffer[2] = {DOEZO_ACTIVATE, actdeact};;
 
-    return(0);
+    // activate sensor
+    I2CSendN(DOEZO_ADDR, sendBuffer, 2);
 }
+
+void DOEZOCalibrate(uint8_t calibrationSetting){
+    /*
+     *  calibrationSetting should indicate calibration setting for sensor. i.e:
+     *  1 = clear all previous calibration
+     *  2 = calibrate to atmospheric oxygen content
+     *  3 = calibrate to 0 dissolved oxygen
+     */
+
+    uint8_t sendBuffer[2] = {DOEZO_CALIBRATION, calibrationSetting};
+
+    // set calibration info
+    I2CSendN(DOEZO_ADDR, sendBuffer, 2);
+
+    // add calibration confirmation to register
+    sendBuffer[0] = DOEZO_CALIBRATIONCONF;
+    if(calibrationSetting == 2){
+        sendBufer[1] = 1;
+    }
+    else if(calibrationSetting == 3){
+            sendBufer[1] = 2;
+        }
+    I2CSendN(DOEZO_ADDR, sendBuffer, 2);
+}
+
+// values read are expressed in mg/L
+float DOEZORead(){
+    uint8_t buffer[4];
+    uint8_t singleReg[1];
+    uint8_t newReading;
+    uint8_t i;
+    uint8_t dataReg = DOEZO_DATA1BYTE_MGL;
+    uint32_t result = 0;
+
+//    I2CReceiveN(DOEZO_ADDR, DOEZO_NEWREADINGAV, 1, singleReg, BIGDELAY);
+//    newReading = singleReg[0];
+
+    if (newReading == 1){
+        for (i = 0; i < 4; i ++){
+            I2CReceiveN(DOEZO_ADDR, dataReg, 1, singleReg, BIGDELAY);
+            buffer[i] = singleReg[0];
+            dataReg = dataReg + 0x01;
+        }
+
+        result += buffer[0] << 24;
+        result += buffer[1] << 16;
+        result += buffer[2] << 8;
+        result += buffer[3];
+    }
+
+    return ((float) result) / 100;
+}
+
+void InitalizeSensorsAndSystem(uint32_t ui32SysClock){
+    extern_initI2C0(ui32SysClock);
+
+   // reset the device as per the data sheet
+   I2CSend(MS5837_ADDR, MS5837_RESET);
+   SysCtlDelay(1000000);
+   I2CSend(TSYS01_ADDR, TSYS01_RESET);
+   SysCtlDelay(1000000);
+}
+
+
+//void main(){
+//    InitConsole();
+//
+//    UARTprintf("MOSIS Sensor HUB '\n");
+//    UARTprintf("starting...  '\n");
+//
+//    initI2C0();
+//    UARTprintf("initialized...  '\n");
+//
+//
+//    // reset the device as per the data sheet
+//    I2CSend(MS5837_ADDR, MS5837_RESET);
+//    SysCtlDelay(10000000);
+//    I2CSend(TSYS01_ADDR, TSYS01_RESET);
+//    SysCtlDelay(10000000);
+//
+//    int i = 0;
+//    for(i = 0;  i< 10; i++){
+//
+//        // Read temperature
+//        TSYS01ReadTemperatureProcess();
+//
+//        // Read pressure
+//        readMS5837PressureSensor();
+//
+//        // Read PH sensor
+//        PHEZOReadPH();
+//
+//        SysCtlDelay(10000000);
+//    }
+//
+//    return(0);
+//}
